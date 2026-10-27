@@ -26,8 +26,10 @@ class Agent:
         """History as stored, except this turn's user message carries the <memory> block."""
         msgs = list(self.history.messages)
         msgs[turn_idx] = {"role": "user", "content": augmented}
-        return msgs
-
+        msgs = list(self.history.messages)
+        msgs[turn_idx] = {"role": "user", "content": augmented}
+        return context.drop_old_thinking(msgs, turn_idx)
+        
     def run_turn(self, user_text: str) -> dict:
         meter = TurnMeter(MODEL)
         augmented = context.build_turn_content(user_text)

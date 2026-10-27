@@ -1,4 +1,4 @@
-"""API harness: context engineering. What goes into each turn, and what does not.
+﻿"""API harness: context engineering. What goes into each turn, and what does not.
 
 Stable part  : SYSTEM_PROMPT (identical every turn, so it can be cached).
 Per-turn part: a small <memory> block prepended to the current user message only.
@@ -35,3 +35,18 @@ def build_turn_content(user_text: str) -> str:
     content = f"{block}\n\n{user_text}"
     say(FILE, f"built turn context: {len(block)} chars of memory + {len(user_text)} chars of user text")
     return content
+
+
+def drop_old_thinking(messages: list, current_idx: int) -> list:
+    """Thinking blocks are signed against the exact content before them. Finished
+    turns were sent with a <memory> block that history does not store, so their
+    signatures no longer match. Drop them; the current turn keeps its own."""
+    out = []
+    for i, m in enumerate(messages):
+        c = m["content"]
+        if i < current_idx and m["role"] == "assistant" and isinstance(c, list):
+            kept = [b for b in c if b.get("type") not in ("thinking", "redacted_thinking")]
+            if kept:
+                m = {"role": m["role"], "content": kept}
+        out.append(m)
+    return out

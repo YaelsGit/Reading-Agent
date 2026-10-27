@@ -4,7 +4,14 @@
 import asyncio
 import time
 
-from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
+from claude_agent_sdk import (
+    AssistantMessage,
+    ClaudeAgentOptions,
+    ResultMessage,
+    TextBlock,
+    ToolUseBlock,
+    query,
+)
 
 from SDK.tools import reading_server
 from shared import store
@@ -29,7 +36,7 @@ Rules:
 """
 
 
-def build_memory() -> str:
+def build_memory() -> str:  # replaces: memory.py, context.py
     """Load persisted preferences and books for the current turn."""
     books = store.load("books", [])
     preferences = store.load("preferences", {})
@@ -77,7 +84,7 @@ class Agent:
             "output_tokens": result["output_tokens"],
             "cache_hit_pct": result["cache_hit_pct"],
             "model_calls": result["model_calls"],
-            "model_calls_measured": result.get("model_calls_measured", False),
+            "model_calls_measured": result["model_calls_measured"],
             "tools": result["tools"],
             "cost_usd": result["cost_usd"],
             "seconds": round(elapsed, 3),
@@ -87,50 +94,56 @@ class Agent:
         options = ClaudeAgentOptions(
             model=MODEL,
             effort=EFFORT,
-            system_prompt=SYSTEM_PROMPT,
-            mcp_servers={"reading": reading_server},
+            system_prompt=SYSTEM_PROMPT,  # replaces: context.py (stable part)
+            mcp_servers={"reading": reading_server},  # replaces: tools.py
             allowed_tools=[
                 "mcp__reading__add_book",
                 "mcp__reading__list_books",
                 "mcp__reading__search_books",
                 "mcp__reading__save_preference",
             ],
+            tools=[],  # no built-in Claude Code tools, only our MCP tools
             strict_mcp_config=True,
             setting_sources=["project"],
-            resume=self.sdk_session_id,
+            resume=self.sdk_session_id,  # replaces: history.py
         )
 
         text_parts = []
         tools_used = []
+        seen_message_ids = set()
+        unnamed_calls = 0
         input_tokens = 0
         cache_read_tokens = 0
         cache_write_tokens = 0
         output_tokens = 0
-        model_calls = 0
         cost_usd = 0.0
         final_result = ""
 
-        async for message in query(prompt=prompt, options=options):
-            if isinstance(message, ResultMessage):
-                self.sdk_session_id = message.session_id
-                usage = message.usage or {}
+        # caching and compaction are automatic in Claude Code  # replaces: caching.py, compaction.py
+        async for message in query(prompt=prompt, options=options):  # replaces: loop.py
+            if isinstance(message, AssistantMessage):
+                message_id = getattr(message, "message_id", None)
+                if message_id is None:
+                    unnamed_calls += 1
+                else:
+                    seen_message_ids.add(message_id)
+                for block in message.content:
+                    if isinstance(block, TextBlock):
+                        text_parts.append(block.text)
+                    elif isinstance(block, ToolUseBlock):
+                        name = block.name.split("__")[-1]
+                        if name not in tools_used:
+                            tools_used.append(name)
 
+            elif isinstance(message, ResultMessage):
+                self.sdk_session_id = message.session_id
+                usage = message.usage or {}  # replaces: tokens.py
                 input_tokens += usage.get("input_tokens", 0)
                 cache_read_tokens += usage.get("cache_read_input_tokens", 0)
                 cache_write_tokens += usage.get("cache_creation_input_tokens", 0)
                 output_tokens += usage.get("output_tokens", 0)
                 cost_usd += message.total_cost_usd or 0.0
-                model_calls = None
                 final_result = message.result or ""
-
-            elif hasattr(message, "content"):
-                for block in message.content:
-                    if getattr(block, "type", "") == "text":
-                        text_parts.append(block.text)
-                    elif getattr(block, "type", "") == "tool_use":
-                        name = getattr(block, "name", "")
-                        if name and name not in tools_used:
-                            tools_used.append(name)
 
         denominator = input_tokens + cache_read_tokens + cache_write_tokens
         cache_hit_pct = (
@@ -139,14 +152,15 @@ class Agent:
         )
 
         return {
-        "text": final_result or "\n".join(text_parts).strip(),
-        "input_tokens": input_tokens,
-        "cache_read_tokens": cache_read_tokens,
-        "cache_write_tokens": cache_write_tokens,
-        "output_tokens": output_tokens,
-        "cache_hit_pct": cache_hit_pct,
-        "model_calls": 0,
-        "model_calls_measured": False,
-        "tools": tools_used,
-        "cost_usd": round(cost_usd, 6),
-    }
+            "text": final_result or "\n".join(text_parts).strip(),
+            "input_tokens": input_tokens,
+            "cache_read_tokens": cache_read_tokens,
+            "cache_write_tokens": cache_write_tokens,
+            "output_tokens": output_tokens,
+            "cache_hit_pct": cache_hit_pct,
+            "model_calls": len(seen_message_ids) + unnamed_calls,
+            "model_calls_measured": True,
+            "tools": tools_used,
+            "cost_usd": round(cost_usd, 6),
+        }
+
