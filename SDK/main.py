@@ -1,9 +1,12 @@
-"""Entry point for the Claude Agent SDK reading agent.
+﻿"""Entry point for the Claude Agent SDK reading agent.
 # replaces: API/main.py
 """
 import argparse
 import json
 from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from claude_agent_sdk import __version__ as sdk_version
 
